@@ -4,38 +4,65 @@ description: Build a Telegram bot to flag insider/team buys on Ethereum, with on
 icon: send
 color: Teal
 ---
-
 # Telegram Ethereum Insider Buy Alert
 
 ## Overview
-A Telegram bot skill that helps flag insider/team buys on Ethereum. It is a research/monitoring tool that pushes timely alerts to a Telegram chat or channel — it does **not** guarantee profit and does not place trades for you unless you explicitly wire that in.
+Flags wallets on Ethereum that buy tokens before public announcements.
 
-## When to use this skill
-Activate when the user wants to flag insider/team buys on Ethereum and receive alerts in Telegram.
-
-## Architecture
-1. **Data source** — pull from on-chain RPC/indexers (e.g. Etherscan-style APIs, DEX subgraphs), market-data APIs (CoinGecko/DEXScreener-style), or social feeds.
-2. **Detection logic** — apply thresholds/filters (volume, liquidity, holders, contract checks) to find candidates.
-3. **Risk filtering** — run safety checks (honeypot, LP lock, holder concentration) before alerting.
-4. **Telegram delivery** — send formatted alerts via the Telegram Bot API `sendMessage`.
-5. **Scheduling** — run on a poll interval or webhook.
-
-## Telegram delivery pattern
+## Dependencies
 ```python
-import requests, os
-TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]   # store as a secret, never hardcode
-CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-def alert(text):
-    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                  json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"})
+from lib.gumloop_telegram import BotConfig, send_alert, build_alert, ScheduledBot, escape_md
+import requests, os, json
 ```
 
-## Safety checklist (critical for alpha hunting)
-- Verify the token is **sellable** (honeypot check) before acting.
-- Check **liquidity is locked/burned** and not removable by the deployer.
-- Inspect **holder concentration** — avoid tokens where a few wallets hold most supply.
-- Review the contract for **mint, blacklist, fee-change, and proxy** functions.
-- Assume most new tokens fail; size any exposure as money you can fully lose.
+## Bot Config
+```python
+config = BotConfig(bot_token=os.environ["TELEGRAM_BOT_TOKEN"], chat_id=os.environ["TELEGRAM_CHAT_ID"])
+EXPLORER = "https://etherscan.io"
+```
+
+## Insider Detection
+```python
+def early_buyers(tok, block):
+    url = f"{EXPLORER}/api?module=account&action=tokentx&contractaddress={tok}&startblock={block}&endblock={block+100}&sort=asc"
+    buyers = {}
+    for tx in requests.get(url, timeout=15).json().get("result", []):
+        addr = tx["to"].lower()
+        val = float(tx.get("value", 0)) / 10**int(tx.get("tokenDecimal", 18))
+        buyers[addr] = buyers.get(addr, 0) + val
+    return buyers
+```
+
+## Webhook Mode
+```python
+from flask import Flask, request
+app = Flask(__name__)
+@app.route("/webhook/insider-check", methods=["POST"])
+def check():
+    data = request.json
+    buyers = early_buyers(data["token"], data.get("deployBlock", 0))
+    for addr, amt in sorted(buyers.items(), key=lambda x: -x[1])[:5]:
+        send_alert(config, f"👀 *Insider Buy*\nToken: {data['token'][:8]}...\nWallet: `{addr[:6]}...`\nAmount: {amt:,.2f}")
+    return "ok", 200
+```
+
+## Docker
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+RUN pip install lib-gumloop-telegram requests flask
+COPY bot.py .
+CMD ["python", "bot.py"]
+```
+```bash
+docker build -t tg-eth-insider .
+docker run -d -e TELEGRAM_BOT_TOKEN=x -e TELEGRAM_CHAT_ID=y tg-eth-insider
+```
+
+## Risk Filters
+- Flag wallets appearing in 3+ token launches as early buyer
+- Check if buyer was funded by CEX before purchase
+- Multi-wallet buys from same funder = coordinated insider
 
 ## Disclaimer
-High-risk and educational. No profit is guaranteed. This is not financial advice. New/low-cap tokens carry extreme risk of total loss, rug pulls, and scams.
+Not financial advice. Insider detection is probabilistic.

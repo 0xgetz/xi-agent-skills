@@ -4,38 +4,51 @@ description: Build a Telegram bot to alert when liquidity is added to a pool, wi
 icon: send
 color: Teal
 ---
-
 # Telegram Liquidity Add Alert
 
 ## Overview
-A Telegram bot skill that helps alert when liquidity is added to a pool. It is a research/monitoring tool that pushes timely alerts to a Telegram chat or channel — it does **not** guarantee profit and does not place trades for you unless you explicitly wire that in.
+Alerts when liquidity is added to a DEX pool — can signal new trading opportunities.
 
-## When to use this skill
-Activate when the user wants to alert when liquidity is added to a pool and receive alerts in Telegram.
-
-## Architecture
-1. **Data source** — pull from on-chain RPC/indexers (e.g. Etherscan-style APIs, DEX subgraphs), market-data APIs (CoinGecko/DEXScreener-style), or social feeds.
-2. **Detection logic** — apply thresholds/filters (volume, liquidity, holders, contract checks) to find candidates.
-3. **Risk filtering** — run safety checks (honeypot, LP lock, holder concentration) before alerting.
-4. **Telegram delivery** — send formatted alerts via the Telegram Bot API `sendMessage`.
-5. **Scheduling** — run on a poll interval or webhook.
-
-## Telegram delivery pattern
+## Dependencies
 ```python
-import requests, os
-TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]   # store as a secret, never hardcode
-CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-def alert(text):
-    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                  json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"})
+from lib.gumloop_telegram import BotConfig, send_alert, build_alert, ScheduledBot, escape_md
+import requests, os, json
 ```
 
-## Safety checklist (critical for alpha hunting)
-- Verify the token is **sellable** (honeypot check) before acting.
-- Check **liquidity is locked/burned** and not removable by the deployer.
-- Inspect **holder concentration** — avoid tokens where a few wallets hold most supply.
-- Review the contract for **mint, blacklist, fee-change, and proxy** functions.
-- Assume most new tokens fail; size any exposure as money you can fully lose.
+## Bot Config
+```python
+config = BotConfig(bot_token=os.environ["TELEGRAM_BOT_TOKEN"], chat_id=os.environ["TELEGRAM_CHAT_ID"])
+WATCH = os.environ.get("WATCH_PAIRS", "").split(",")
+```
+
+## LP Add Detection
+```python
+def monitor():
+    topic = "0x4c209b5fc8ad50758f13e2e1088ba56a560dff690a1c6fef26394f4c03821c4f"
+    pl = {"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"latest","topics":[topic]}],"id":1}
+    rpc = os.environ.get("ETH_RPC", "https://eth.llamarpc.com")
+    for log in requests.post(rpc, json=pl, timeout=15).json().get("result", []):
+        if not WATCH or log["address"] in WATCH:
+            send_alert(config, f"💧 *Liquidity Added*\nPair: `{log['address'][:10]}...`\nBlock: {int(log['blockNumber'], 16)}")
+```
+
+## Docker
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+RUN pip install lib-gumloop-telegram requests
+COPY bot.py .
+CMD ["python", "bot.py"]
+```
+```bash
+docker build -t tg-liq-add .
+docker run -d -e TELEGRAM_BOT_TOKEN=x -e TELEGRAM_CHAT_ID=y tg-liq-add
+```
+
+## Risk Filters
+- Flag if LP added by deployer wallet (vs organic LPs)
+- Check if LP token is then locked or burned
+- Cross-reference with token honeypot status
 
 ## Disclaimer
-High-risk and educational. No profit is guaranteed. This is not financial advice. New/low-cap tokens carry extreme risk of total loss, rug pulls, and scams.
+Not financial advice. LP additions are signals, not guarantees.

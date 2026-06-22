@@ -4,38 +4,72 @@ description: Build a Telegram bot to track large wallet moves on BSC, with on-ch
 icon: send
 color: Teal
 ---
-
 # Telegram BSC Whale Wallet Tracker
 
 ## Overview
-A Telegram bot skill that helps track large wallet moves on BSC. It is a research/monitoring tool that pushes timely alerts to a Telegram chat or channel — it does **not** guarantee profit and does not place trades for you unless you explicitly wire that in.
+Monitors large wallet addresses on BSC for significant token transfers.
 
-## When to use this skill
-Activate when the user wants to track large wallet moves on BSC and receive alerts in Telegram.
-
-## Architecture
-1. **Data source** — pull from on-chain RPC/indexers (e.g. Etherscan-style APIs, DEX subgraphs), market-data APIs (CoinGecko/DEXScreener-style), or social feeds.
-2. **Detection logic** — apply thresholds/filters (volume, liquidity, holders, contract checks) to find candidates.
-3. **Risk filtering** — run safety checks (honeypot, LP lock, holder concentration) before alerting.
-4. **Telegram delivery** — send formatted alerts via the Telegram Bot API `sendMessage`.
-5. **Scheduling** — run on a poll interval or webhook.
-
-## Telegram delivery pattern
+## Dependencies
 ```python
-import requests, os
-TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]   # store as a secret, never hardcode
-CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-def alert(text):
-    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                  json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"})
+from lib.gumloop_telegram import BotConfig, send_alert, build_alert, ScheduledBot, escape_md
+import requests, os, json, time
 ```
 
-## Safety checklist (critical for alpha hunting)
-- Verify the token is **sellable** (honeypot check) before acting.
-- Check **liquidity is locked/burned** and not removable by the deployer.
-- Inspect **holder concentration** — avoid tokens where a few wallets hold most supply.
-- Review the contract for **mint, blacklist, fee-change, and proxy** functions.
-- Assume most new tokens fail; size any exposure as money you can fully lose.
+## Bot Config
+```python
+config = BotConfig(bot_token=os.environ["TELEGRAM_BOT_TOKEN"], chat_id=os.environ["TELEGRAM_CHAT_ID"])
+EXPLORER = "https://bscscan.com"
+WHALES = os.environ.get("WHALE_WALLETS", "").split(",")
+MIN_USD = int(os.environ.get("MIN_WHALE_USD", "50000"))
+```
+
+## Whale Detection
+```python
+def recent_txs(wallet):
+    url = f"{EXPLORER}/api?module=account&action=tokentx&address={wallet}&sort=desc"
+    r = requests.get(url, timeout=15).json()
+    return r.get("result", []) if r.get("status") == "1" else []
+
+def poll():
+    for w in WHALES:
+        txs = recent_txs(w.strip())
+        for tx in txs[:5]:
+            val = float(tx.get("value", 0)) / 10**int(tx.get("tokenDecimal", 18))
+            if val > 0:
+                msg = (
+                    f"🐋 *Whale Move on BSC*\n"
+                    f"Wallet: `{w[:6]}...{w[-4:]}`\n"
+                    f"Token: {escape_md(tx.get('tokenSymbol', '?'))}\n"
+                    f"Amount: {val:,.2f}\n"
+                    f"[Tx]({EXPLORER}/tx/{tx['hash']})"
+                )
+                send_alert(config, msg)
+```
+
+## Docker
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+RUN pip install lib-gumloop-telegram requests
+COPY bot.py .
+CMD ["python", "bot.py"]
+```
+```bash
+docker build -t tg-bsc-whale .
+docker run -d -e TELEGRAM_BOT_TOKEN=x -e TELEGRAM_CHAT_ID=y -e WHALE_WALLETS=0xAddr1,0xAddr2 tg-bsc-whale
+```
+
+## Production Deployment
+| Platform | Notes |
+|----------|-------|
+| Railway | Set env vars, `railway up` |
+| Fly.io | `fly secrets set WHALE_WALLETS=...` |
+| Render | Worker service type |
+
+## Risk Filters
+- Minimum $50k USD movement (configurable via MIN_WHALE_USD)
+- Flag rapid sequential sells from same wallet
+- Track whale wallet creation time
 
 ## Disclaimer
-High-risk and educational. No profit is guaranteed. This is not financial advice. New/low-cap tokens carry extreme risk of total loss, rug pulls, and scams.
+Not financial advice. Requires reliable RPC/API keys.

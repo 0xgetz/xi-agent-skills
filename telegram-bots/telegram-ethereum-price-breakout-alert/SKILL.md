@@ -4,38 +4,66 @@ description: Build a Telegram bot to alert on price breakouts on Ethereum, with 
 icon: send
 color: Teal
 ---
-
 # Telegram Ethereum Price Breakout Alert
 
 ## Overview
-A Telegram bot skill that helps alert on price breakouts on Ethereum. It is a research/monitoring tool that pushes timely alerts to a Telegram chat or channel — it does **not** guarantee profit and does not place trades for you unless you explicitly wire that in.
+Detects price breakouts from consolidation ranges on Ethereum.
 
-## When to use this skill
-Activate when the user wants to alert on price breakouts on Ethereum and receive alerts in Telegram.
-
-## Architecture
-1. **Data source** — pull from on-chain RPC/indexers (e.g. Etherscan-style APIs, DEX subgraphs), market-data APIs (CoinGecko/DEXScreener-style), or social feeds.
-2. **Detection logic** — apply thresholds/filters (volume, liquidity, holders, contract checks) to find candidates.
-3. **Risk filtering** — run safety checks (honeypot, LP lock, holder concentration) before alerting.
-4. **Telegram delivery** — send formatted alerts via the Telegram Bot API `sendMessage`.
-5. **Scheduling** — run on a poll interval or webhook.
-
-## Telegram delivery pattern
+## Dependencies
 ```python
-import requests, os
-TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]   # store as a secret, never hardcode
-CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-def alert(text):
-    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                  json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"})
+from lib.gumloop_telegram import BotConfig, send_alert, build_alert, ScheduledBot, escape_md
+import requests, os, json, statistics
+from collections import deque
 ```
 
-## Safety checklist (critical for alpha hunting)
-- Verify the token is **sellable** (honeypot check) before acting.
-- Check **liquidity is locked/burned** and not removable by the deployer.
-- Inspect **holder concentration** — avoid tokens where a few wallets hold most supply.
-- Review the contract for **mint, blacklist, fee-change, and proxy** functions.
-- Assume most new tokens fail; size any exposure as money you can fully lose.
+## Bot Config
+```python
+config = BotConfig(bot_token=os.environ["TELEGRAM_BOT_TOKEN"], chat_id=os.environ["TELEGRAM_CHAT_ID"])
+STD = float(os.environ.get("BREAKOUT_Z", "2.5"))
+WATCH = os.environ.get("WATCH_TOKENS", "").split(",")
+ph = {}
+```
+
+## Breakout Detection
+```python
+def price(t):
+    p = requests.get(f"https://api.dexscreener.com/latest/dex/search?q={t}", timeout=15).json().get("pairs", [])
+    return float(p[0]["priceUsd"]) if p else None
+
+def detect(t):
+    p = price(t.strip())
+    if not p:
+        return
+    if t not in ph:
+        ph[t] = deque(maxlen=30)
+    ph[t].append(p)
+    h = list(ph[t])
+    if len(h) < 10:
+        return
+    m, s = statistics.mean(h[:-1]), statistics.stdev(h[:-1]) or 0.0001
+    z = (h[-1] - m) / s
+    if abs(z) >= STD:
+        d = "🚀 UP" if z > 0 else "📉 DOWN"
+        send_alert(config, f"{d} *Breakout on Ethereum*\n`{escape_md(t[:10])}...`\nPrice: ${p:.8f}\nZ-score: {z:.2f}")
+```
+
+## Docker
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+RUN pip install lib-gumloop-telegram requests
+COPY bot.py .
+CMD ["python", "bot.py"]
+```
+```bash
+docker build -t tg-eth-breakout .
+docker run -d -e TELEGRAM_BOT_TOKEN=x -e TELEGRAM_CHAT_ID=y -e WATCH_TOKENS=0xToken -e BREAKOUT_Z=2.5 tg-eth-breakout
+```
+
+## Risk Filters
+- Minimum 10 price samples before detection
+- Exclude tokens with liquidity < $10k
+- Volume confirmation required alongside price move
 
 ## Disclaimer
-High-risk and educational. No profit is guaranteed. This is not financial advice. New/low-cap tokens carry extreme risk of total loss, rug pulls, and scams.
+Not financial advice. Breakout patterns can fail.

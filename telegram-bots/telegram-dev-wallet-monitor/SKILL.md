@@ -4,38 +4,53 @@ description: Build a Telegram bot to watch the deployer wallet for sells or tran
 icon: send
 color: Teal
 ---
-
 # Telegram Dev Wallet Monitor
 
 ## Overview
-A Telegram bot skill that helps watch the deployer wallet for sells or transfers. It is a research/monitoring tool that pushes timely alerts to a Telegram chat or channel — it does **not** guarantee profit and does not place trades for you unless you explicitly wire that in.
+Monitors deployer wallet addresses for sells and transfers — a rug-pull early warning system.
 
-## When to use this skill
-Activate when the user wants to watch the deployer wallet for sells or transfers and receive alerts in Telegram.
-
-## Architecture
-1. **Data source** — pull from on-chain RPC/indexers (e.g. Etherscan-style APIs, DEX subgraphs), market-data APIs (CoinGecko/DEXScreener-style), or social feeds.
-2. **Detection logic** — apply thresholds/filters (volume, liquidity, holders, contract checks) to find candidates.
-3. **Risk filtering** — run safety checks (honeypot, LP lock, holder concentration) before alerting.
-4. **Telegram delivery** — send formatted alerts via the Telegram Bot API `sendMessage`.
-5. **Scheduling** — run on a poll interval or webhook.
-
-## Telegram delivery pattern
+## Dependencies
 ```python
-import requests, os
-TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]   # store as a secret, never hardcode
-CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-def alert(text):
-    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                  json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"})
+from lib.gumloop_telegram import BotConfig, send_alert, build_alert, ScheduledBot, escape_md
+import requests, os, json
 ```
 
-## Safety checklist (critical for alpha hunting)
-- Verify the token is **sellable** (honeypot check) before acting.
-- Check **liquidity is locked/burned** and not removable by the deployer.
-- Inspect **holder concentration** — avoid tokens where a few wallets hold most supply.
-- Review the contract for **mint, blacklist, fee-change, and proxy** functions.
-- Assume most new tokens fail; size any exposure as money you can fully lose.
+## Bot Config
+```python
+config = BotConfig(bot_token=os.environ["TELEGRAM_BOT_TOKEN"], chat_id=os.environ["TELEGRAM_CHAT_ID"])
+WALLETS = os.environ.get("DEPLOYER_WALLETS", "").split(",")
+RPC_CHAINS = {"eth":"https://eth.llamarpc.com","bsc":"https://bsc-dataseed.binance.org","arb":"https://arb1.arbitrum.io/rpc"}
+```
+
+## Dev Wallet Monitor
+```python
+def poll():
+    for entry in WALLETS:
+        parts = entry.strip().split(":")
+        addr, chain = parts[0], (parts[1] if len(parts) > 1 else "eth")
+        rpc = RPC_CHAINS.get(chain, "https://eth.llamarpc.com")
+        logs = requests.post(rpc, json={"jsonrpc":"2.0","method":"eth_getLogs","params":[{"address":addr,"fromBlock":"0x0","toBlock":"latest"}],"id":1}, timeout=10).json().get("result",[])
+        for log in logs[:3]:
+            send_alert(config, f"🚨 *Dev Activity on {chain.title()}*\nWallet: `{addr[:6]}...{addr[-4:]}`\nTx: [{log['transactionHash'][:10]}...](https://{chain}.etherscan.io/tx/{log['transactionHash']})")
+```
+
+## Docker
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+RUN pip install lib-gumloop-telegram requests
+COPY bot.py .
+CMD ["python", "bot.py"]
+```
+```bash
+docker build -t tg-dev-wallet .
+docker run -d -e TELEGRAM_BOT_TOKEN=x -e TELEGRAM_CHAT_ID=y -e DEPLOYER_WALLETS=0xDeployer:eth,0xDev2:bsc tg-dev-wallet
+```
+
+## Risk Filters
+- Flag any sell from deployer to a DEX/router address
+- Large transfers (>1% of supply) = critical alert
+- Cross-chain deployer activity = elevated suspicion
 
 ## Disclaimer
-High-risk and educational. No profit is guaranteed. This is not financial advice. New/low-cap tokens carry extreme risk of total loss, rug pulls, and scams.
+Not financial advice. Dev wallet activity is a strong but not definitive rug signal.
