@@ -4,38 +4,76 @@ description: Build a Telegram bot to post trending-coin digests on Arbitrum, wit
 icon: send
 color: Teal
 ---
-
 # Telegram Arbitrum Trending Tokens Digest
 
 ## Overview
-A Telegram bot skill that helps post trending-coin digests on Arbitrum. It is a research/monitoring tool that pushes timely alerts to a Telegram chat or channel — it does **not** guarantee profit and does not place trades for you unless you explicitly wire that in.
+Aggregates trending token data on Arbitrum and sends a periodic digest.
 
-## When to use this skill
-Activate when the user wants to post trending-coin digests on Arbitrum and receive alerts in Telegram.
-
-## Architecture
-1. **Data source** — pull from on-chain RPC/indexers (e.g. Etherscan-style APIs, DEX subgraphs), market-data APIs (CoinGecko/DEXScreener-style), or social feeds.
-2. **Detection logic** — apply thresholds/filters (volume, liquidity, holders, contract checks) to find candidates.
-3. **Risk filtering** — run safety checks (honeypot, LP lock, holder concentration) before alerting.
-4. **Telegram delivery** — send formatted alerts via the Telegram Bot API `sendMessage`.
-5. **Scheduling** — run on a poll interval or webhook.
-
-## Telegram delivery pattern
+## Dependencies
 ```python
-import requests, os
-TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]   # store as a secret, never hardcode
-CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-def alert(text):
-    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                  json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"})
+from lib.gumloop_telegram import BotConfig, send_alert, build_alert, ScheduledBot, escape_md
+import requests, os, json
+from datetime import datetime
 ```
 
-## Safety checklist (critical for alpha hunting)
-- Verify the token is **sellable** (honeypot check) before acting.
-- Check **liquidity is locked/burned** and not removable by the deployer.
-- Inspect **holder concentration** — avoid tokens where a few wallets hold most supply.
-- Review the contract for **mint, blacklist, fee-change, and proxy** functions.
-- Assume most new tokens fail; size any exposure as money you can fully lose.
+## Bot Config
+```python
+config = BotConfig(bot_token=os.environ["TELEGRAM_BOT_TOKEN"], chat_id=os.environ["TELEGRAM_CHAT_ID"])
+TOP_N = int(os.environ.get("TOP_TRENDING", "10"))
+```
+
+## Trending Generator
+```python
+def fetch_trending():
+    pairs = [p for p in requests.get(f"https://api.dexscreener.com/token-pairs/v1/42161", timeout=15).json()
+             if float(p.get("liquidity", {"usd": 0})["usd"]) > 5000]
+    for p in pairs:
+        v = float(p.get("volume", {"h24": 0})["h24"])
+        pc = float(p.get("priceChange", {"h24": 0})["h24"])
+        p["score"] = v * (1 + abs(pc) / 100)
+    pairs.sort(key=lambda x: x["score"], reverse=True)
+    return pairs[:TOP_N]
+
+def send_digest():
+    top = fetch_trending()
+    lines = [f"📈 *Trending on Arbitrum — {datetime.now().strftime('%H:%M UTC')}*\n"]
+    for i, p in enumerate(top, 1):
+        lines.append(f"{i}. *{escape_md(p['baseToken']['symbol'])}* ${float(p['priceUsd']):.8f} Vol: ${float(p['volume']['h24']):,.0f}")
+    send_alert(config, "\n".join(lines))
+```
+
+## Polling (ScheduledBot)
+```python
+bot = ScheduledBot(config, interval=3600)  # hourly
+@bot.on_poll
+def poll():
+    send_digest()
+```
+
+## Docker
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+RUN pip install lib-gumloop-telegram requests
+COPY bot.py .
+CMD ["python", "bot.py"]
+```
+```bash
+docker build -t tg-arb-trending .
+docker run -d -e TELEGRAM_BOT_TOKEN=x -e TELEGRAM_CHAT_ID=y -e TOP_TRENDING=15 tg-arb-trending
+```
+
+## Production Deployment
+| Platform | Notes |
+|----------|-------|
+| Railway | Set env vars, deploy |
+| Fly.io | `fly deploy` with secrets |
+| Render | Cron job every hour |
+
+## Risk Filters
+- Minimum $5k liquidity threshold
+- Exclude pairs with identical buy/sell volume (wash trading)
+- Require 20+ unique traders
 
 ## Disclaimer
-High-risk and educational. No profit is guaranteed. This is not financial advice. New/low-cap tokens carry extreme risk of total loss, rug pulls, and scams.
+Not financial advice. Rankings can be gamed.

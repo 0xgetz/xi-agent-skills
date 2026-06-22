@@ -1,41 +1,60 @@
 ---
+
 name: telegram-airdrop-hunter
 description: Build a Telegram bot to surface potential airdrop opportunities and tasks, with on-chain/market data sourcing, risk/honeypot filtering, and Telegram alert delivery. Activate when the user wants to surface potential airdrop opportunities and tasks and get alerts in Telegram.
 icon: send
 color: Teal
 ---
-
 # Telegram Airdrop Hunter
 
 ## Overview
-A Telegram bot skill that helps surface potential airdrop opportunities and tasks. It is a research/monitoring tool that pushes timely alerts to a Telegram chat or channel — it does **not** guarantee profit and does not place trades for you unless you explicitly wire that in.
+Multi-chain airdrop opportunity scanner that polls DEXScreener for high-activity low-liquidity tokens.
 
-## When to use this skill
-Activate when the user wants to surface potential airdrop opportunities and tasks and receive alerts in Telegram.
-
-## Architecture
-1. **Data source** — pull from on-chain RPC/indexers (e.g. Etherscan-style APIs, DEX subgraphs), market-data APIs (CoinGecko/DEXScreener-style), or social feeds.
-2. **Detection logic** — apply thresholds/filters (volume, liquidity, holders, contract checks) to find candidates.
-3. **Risk filtering** — run safety checks (honeypot, LP lock, holder concentration) before alerting.
-4. **Telegram delivery** — send formatted alerts via the Telegram Bot API `sendMessage`.
-5. **Scheduling** — run on a poll interval or webhook.
-
-## Telegram delivery pattern
+## Dependencies
 ```python
-import requests, os
-TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]   # store as a secret, never hardcode
-CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-def alert(text):
-    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                  json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"})
+from lib.gumloop_telegram import BotConfig, send_alert, build_alert, ScheduledBot, escape_md
+import requests, os, json
 ```
 
-## Safety checklist (critical for alpha hunting)
-- Verify the token is **sellable** (honeypot check) before acting.
-- Check **liquidity is locked/burned** and not removable by the deployer.
-- Inspect **holder concentration** — avoid tokens where a few wallets hold most supply.
-- Review the contract for **mint, blacklist, fee-change, and proxy** functions.
-- Assume most new tokens fail; size any exposure as money you can fully lose.
+## Bot Config
+```python
+config = BotConfig(bot_token=os.environ["TELEGRAM_BOT_TOKEN"], chat_id=os.environ["TELEGRAM_CHAT_ID"])
+CHAINS = {"ethereum":1,"arbitrum":42161,"base":8453,"polygon":137,"bsc":56}
+```
+
+## Multi-Chain Scan
+```python
+def scan():
+    for name, cid in CHAINS.items():
+        pairs = requests.get(f"https://api.dexscreener.com/token-pairs/v1/{cid}", timeout=20).json()
+        for p in (pairs if isinstance(pairs, list) else []):
+            txs = int(p.get("txns",{}).get("h24",0))
+            liq = float(p.get("liquidity",{}).get("usd",0))
+            if txs > 500 and liq < 5000:
+                msg = f"🎁 *{name.title()} Airdrop*\n{escape_md(p['baseToken']['symbol'])} TXs:{txs} Liq:${liq:,.0f}"
+                send_alert(config, msg)
+```
+
+## Docker
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+RUN pip install lib-gumloop-telegram requests
+COPY bot.py .
+CMD ["python", "bot.py"]
+```
+```bash
+docker build -t tg-airdrop-hunter .
+docker run -d -e TELEGRAM_BOT_TOKEN=x -e TELEGRAM_CHAT_ID=y tg-airdrop-hunter
+```
+
+## Production
+Railway: `railway up` | Fly.io: `fly secrets set BOT_TOKEN=...` | Render: Worker
+
+## Risk Filters
+- High TX + low liq = points farming signal
+- Dusting attack detection
+- Never connect wallet to untrusted dApps
 
 ## Disclaimer
-High-risk and educational. No profit is guaranteed. This is not financial advice. New/low-cap tokens carry extreme risk of total loss, rug pulls, and scams.
+High-risk. No reward guaranteed. Not financial advice.
