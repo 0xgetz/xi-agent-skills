@@ -4,38 +4,104 @@ description: Build a Telegram bot to detect brand-new token deployments and cont
 icon: send
 color: Teal
 ---
-
-# Telegram New Token Launch Scanner
+# Telegram Ethereum New Token Launch Scanner
 
 ## Overview
-A Telegram bot skill that helps detect brand-new token deployments and contract creations. It is a research/monitoring tool that pushes timely alerts to a Telegram chat or channel — it does **not** guarantee profit and does not place trades for you unless you explicitly wire that in.
+Detects newly deployed token contracts on Ethereum, evaluates risk, and sends alerts.
 
-## When to use this skill
-Activate when the user wants to detect brand-new token deployments and contract creations and receive alerts in Telegram.
-
-## Architecture
-1. **Data source** — pull from on-chain RPC/indexers (e.g. Etherscan-style APIs, DEX subgraphs), market-data APIs (CoinGecko/DEXScreener-style), or social feeds.
-2. **Detection logic** — apply thresholds/filters (volume, liquidity, holders, contract checks) to find candidates.
-3. **Risk filtering** — run safety checks (honeypot, LP lock, holder concentration) before alerting.
-4. **Telegram delivery** — send formatted alerts via the Telegram Bot API `sendMessage`.
-5. **Scheduling** — run on a poll interval or webhook.
-
-## Telegram delivery pattern
+## Dependencies & Imports
 ```python
-import requests, os
-TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]   # store as a secret, never hardcode
-CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-def alert(text):
-    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                  json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"})
+from lib.gumloop_telegram import BotConfig, send_alert, build_alert, ScheduledBot, escape_md
+import requests, os, json, time
 ```
 
-## Safety checklist (critical for alpha hunting)
-- Verify the token is **sellable** (honeypot check) before acting.
-- Check **liquidity is locked/burned** and not removable by the deployer.
-- Inspect **holder concentration** — avoid tokens where a few wallets hold most supply.
-- Review the contract for **mint, blacklist, fee-change, and proxy** functions.
-- Assume most new tokens fail; size any exposure as money you can fully lose.
+## Bot Config
+```python
+config = BotConfig(bot_token=os.environ["TELEGRAM_BOT_TOKEN"], chat_id=os.environ["TELEGRAM_CHAT_ID"])
+```
+
+## Core Detection
+```python
+RPC = "https://eth.llamarpc.com"
+EXPLORER = "https://etherscan.io"
+
+def fetch_new_tokens():
+    url = f"https://api.dexscreener.com/token-pairs/v1/1"
+    pairs = requests.get(url, timeout=15).json()
+    cutoff = time.time() - 1800
+    fresh = []
+    for p in pairs:
+        created = p.get("pairCreatedAt", 0) / 1000
+        if created > cutoff and float(p.get("liquidity", {"usd": 0})["usd"]) > 500:
+            fresh.append(p)
+    return fresh
+
+def quick_risk(token):
+    payload = {"jsonrpc": "2.0", "method": "eth_call",
+        "params": [{"to": token, "data": "0x70a082310000000000000000000000000000000000000000000000000000000000000001"}, "latest"], "id": 1}
+    try:
+        resp = requests.post(RPC, json=payload, timeout=10)
+        return resp.json().get("result") is not None
+    except:
+        return False
+
+def run():
+    for t in fetch_new_tokens():
+        if not quick_risk(t["baseToken"]["address"]):
+            continue
+        msg = (
+            f"🚀 *New Token:* {escape_md(t['baseToken']['symbol'])}\n"
+            f"💰 ${t['priceUsd']}\n"
+            f"💧 Liq: ${float(t['liquidity']['usd']):,.0f}\n"
+            f"🔗 [Explorer]({EXPLORER}/address/{t['baseToken']['address']})"
+        )
+        send_alert(config, msg)
+```
+
+## Webhook Mode
+```python
+from flask import Flask, request
+app = Flask(__name__)
+@app.route("/webhook/token-launch", methods=["POST"])
+def webhook():
+    send_alert(config, f"🚀 New token: {request.json.get('tokenAddress','')}")
+    return "ok", 200
+```
+
+## Polling (ScheduledBot)
+```python
+bot = ScheduledBot(config, interval=120)
+@bot.on_poll
+def scan():
+    run()
+```
+
+## Docker
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+RUN pip install lib-gumloop-telegram requests flask
+COPY bot.py .
+CMD ["python", "bot.py"]
+```
+```bash
+docker build -t tg-eth-newtoken .
+docker run -d -e TELEGRAM_BOT_TOKEN=x -e TELEGRAM_CHAT_ID=y tg-eth-newtoken
+```
+
+## Production Deployment
+| Platform | Instructions |
+|----------|-------------|
+| Railway | `railway init`, set env vars, `railway up` |
+| Fly.io | `fly launch`, `fly secrets set TELEGRAM_BOT_TOKEN=...` |
+| Render | Connect GitHub, add env vars, select Worker |
+
+## Risk Filters
+- Minimum liquidity: $500 USD
+- Age filter: < 30 minutes
+- Honeypot check via eth_call before alerting
+- Holder count > 5 required
+- Reject tokens with mint() or blacklist() signature
 
 ## Disclaimer
-High-risk and educational. No profit is guaranteed. This is not financial advice. New/low-cap tokens carry extreme risk of total loss, rug pulls, and scams.
+High-risk. No profit guaranteed. Not financial advice.

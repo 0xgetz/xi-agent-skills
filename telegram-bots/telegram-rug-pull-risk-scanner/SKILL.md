@@ -4,38 +4,76 @@ description: Build a Telegram bot to score tokens for rug-pull risk via contract
 icon: send
 color: Teal
 ---
-
-# Telegram Rug Pull Risk Scanner
+# Telegram Ethereum Rug Pull Risk Scanner
 
 ## Overview
-A Telegram bot skill that helps score tokens for rug-pull risk via contract and LP checks. It is a research/monitoring tool that pushes timely alerts to a Telegram chat or channel — it does **not** guarantee profit and does not place trades for you unless you explicitly wire that in.
+Scores token contracts on Ethereum for rug-pull indicators (mint, blacklist, proxy, tax).
 
-## When to use this skill
-Activate when the user wants to score tokens for rug-pull risk via contract and LP checks and receive alerts in Telegram.
-
-## Architecture
-1. **Data source** — pull from on-chain RPC/indexers (e.g. Etherscan-style APIs, DEX subgraphs), market-data APIs (CoinGecko/DEXScreener-style), or social feeds.
-2. **Detection logic** — apply thresholds/filters (volume, liquidity, holders, contract checks) to find candidates.
-3. **Risk filtering** — run safety checks (honeypot, LP lock, holder concentration) before alerting.
-4. **Telegram delivery** — send formatted alerts via the Telegram Bot API `sendMessage`.
-5. **Scheduling** — run on a poll interval or webhook.
-
-## Telegram delivery pattern
+## Dependencies
 ```python
-import requests, os
-TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]   # store as a secret, never hardcode
-CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-def alert(text):
-    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                  json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"})
+from lib.gumloop_telegram import BotConfig, send_alert, build_alert, ScheduledBot, escape_md
+import requests, os, json, re
 ```
 
-## Safety checklist (critical for alpha hunting)
-- Verify the token is **sellable** (honeypot check) before acting.
-- Check **liquidity is locked/burned** and not removable by the deployer.
-- Inspect **holder concentration** — avoid tokens where a few wallets hold most supply.
-- Review the contract for **mint, blacklist, fee-change, and proxy** functions.
-- Assume most new tokens fail; size any exposure as money you can fully lose.
+## Bot Config
+```python
+config = BotConfig(bot_token=os.environ["TELEGRAM_BOT_TOKEN"], chat_id=os.environ["TELEGRAM_CHAT_ID"])
+EXPLORER = "https://etherscan.io"
+```
+
+## Rug Scoring
+```python
+RISKY_PATTERNS = re.compile(r"(mint|blacklist|pause|setTax|upgradeTo|transferOwnership|setMaxTx|cooldown)", re.I)
+
+def score(tok):
+    s, r = 0, []
+    try:
+        resp = requests.get(f"{EXPLORER}/api?module=contract&action=getsourcecode&address={tok}", timeout=15).json()
+        src = resp.get("result", [{}])[0].get("SourceCode", "")
+        if not src:
+            s += 3
+            r.append("Source unverified")
+        else:
+            matches = RISKY_PATTERNS.findall(src)
+            s += len(matches) * 1.5
+            if matches:
+                r.append(f"Risky functions: {', '.join(set(matches))}")
+            # Check proxy via EIP-1967
+    except:
+        s += 3
+        r.append("API error")
+
+    em = "🟢" if s <= 3 else "🟡" if s <= 6 else "🔴"
+    s = min(s, 10)
+    send_alert(config, f"{em} *Rug Scan on Ethereum*\nScore: {s}/10\n{'; '.join(r) if r else 'No issues found'}")
+```
+
+## Docker
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+RUN pip install lib-gumloop-telegram requests
+COPY bot.py .
+CMD ["python", "bot.py"]
+```
+```bash
+docker build -t tg-eth-rug .
+docker run -d -e TELEGRAM_BOT_TOKEN=x -e TELEGRAM_CHAT_ID=y tg-eth-rug
+```
+
+## Production Deployment
+| Platform | Notes |
+|----------|-------|
+| Railway | Add ETH_ETHERSCAN_KEY as env var |
+| Fly.io | `fly secrets set ETH_ETHERSCAN_KEY=...` |
+| Render | Web service, configure env vars |
+
+## Risk Filters
+- Unverified source = +3 points
+- Each risky function = +1.5 points
+- Proxy pattern = +2 points
+- Deployer holds LP = +2 points
+- Token age < 24h = +1 point
 
 ## Disclaimer
-High-risk and educational. No profit is guaranteed. This is not financial advice. New/low-cap tokens carry extreme risk of total loss, rug pulls, and scams.
+Not financial advice. Heuristic only; sophisticated rug contracts may evade detection.
