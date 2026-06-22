@@ -1,0 +1,11 @@
+version: '3.8'
+services:
+  alpha-bot:
+    build: .
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - CAPITAL_USD=${CAPITAL_USD:-500}
+      - RPC_URL=${RPC_URL:-https://eth-mainnet.g.alchemy.com/v2/demo}
+    command: python alerts/telegram_bot.py all
+    restart: unless-stopped
