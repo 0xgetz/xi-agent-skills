@@ -1,0 +1,20 @@
+# XIBot Pro — pinned, mutually-compatible versions.
+# These pins prevent the numpy/scipy ABI conflict that breaks scipy.sparse
+# (np.long removed in numpy 2.x while scipy<2.0 still references it).
+# Verified working together via pro/verify_system.py.
+
+numpy>=1.26,<2.0
+scipy>=1.11,<1.13
+pandas>=2.0,<3.0
+scikit-learn>=1.3,<2.0
+
+# Optional — enables cointegration / Johansen tests in pro.statarb.
+# The statarb module imports and runs WITHOUT this; only the cointegration
+# functions raise a clear, actionable error if it is missing.
+statsmodels>=0.14,<0.15
+
+# Optional — Hidden Markov regime detection in pro.regime.
+hmmlearn>=0.3,<0.4
+
+# Reporting (interactive HTML charts)
+plotly>=5.0
