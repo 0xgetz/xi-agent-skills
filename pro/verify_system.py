@@ -212,6 +212,31 @@ check("orchestrator.risk_halt", _orch_risk_halt)
 
 
 # ════════════════════════════════════════════════════════════════════
+print("\n━━━ 10. PAPER TRADER (offline smoke test) ━━━")
+
+def _paper_imports():
+    from pro.paper_trader import PaperTrader, PaperPortfolio, LiveMarketData
+    return "paper_trader importable"
+
+def _paper_portfolio():
+    # Fully offline test of the virtual portfolio fill logic (no network)
+    import tempfile, os as _os
+    from pro import paper_trader as pt
+    tmp = tempfile.mktemp(suffix=".json")
+    pt.STATE_FILE = tmp
+    port = pt.PaperPortfolio(10_000)
+    pos = port.open("BTC-USD", "long", 100.0, 1000.0, 95.0, 110.0, "bull", 0.7)
+    assert pos is not None and port.state.cash < 10_000
+    pnl = port.close(pos, 110.0, "take_profit")
+    assert pnl > 0, f"expected profit on TP, got {pnl}"
+    if _os.path.exists(tmp): _os.remove(tmp)
+    return f"open/close fill logic ok (TP pnl=${pnl:.2f})"
+
+check("paper_trader.imports", _paper_imports)
+check("paper_trader.portfolio_fills", _paper_portfolio)
+
+
+# ════════════════════════════════════════════════════════════════════
 total = len(PASS) + len(FAIL)
 print("\n" + "═" * 60)
 print(f"  VERIFICATION: {len(PASS)}/{total} checks passed")

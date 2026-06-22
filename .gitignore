@@ -1,0 +1,6 @@
+# Paper trading runtime state — never commit
+paper_state.json
+daily_pnl.json
+*.pyc
+__pycache__/
+.env

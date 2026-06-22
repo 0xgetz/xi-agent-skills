@@ -73,3 +73,30 @@ needs them.
 Educational / research use only. **Not financial advice. No profit is guaranteed.**
 Markets carry risk of total loss. Position sizing here is scientific, not magic —
 it controls risk, it does not eliminate it.
+
+
+---
+
+## 📡 Paper Trading on LIVE Data (`paper_trader.py`)
+
+Connect the verified orchestrator to **live market data** and trade on paper —
+no real money, no exchange keys. This is how a professional validates a system
+before risking a cent.
+
+```bash
+# one cycle: live data -> orchestrator decision -> realistic fills -> portfolio
+PYTHONPATH=. python pro/paper_trader.py --symbols BTC-USD ETH-USD SOL-USD --capital 10000
+
+PYTHONPATH=. python pro/paper_trader.py --status   # show portfolio + live PnL
+PYTHONPATH=. python pro/paper_trader.py --reset    # wipe paper state
+```
+
+- **Data**: yfinance (full OHLCV for crypto `BTC-USD` and stocks `AAPL`), CoinGecko fallback.
+- **Realistic fills**: configurable fee (0.10%) and slippage (0.05%) on every entry/exit.
+- **Persistent virtual portfolio**: positions, cash, realized/unrealized PnL saved to `paper_state.json`.
+- **Closed-loop risk**: live drawdown / daily-PnL / exposure are fed back into the
+  orchestrator's risk gates, so the daily-loss limit and exposure cap actually bind.
+- **Stop/target monitoring**: open positions are checked against SL/TP every cycle.
+
+Schedule it (e.g. cron / Railway) to run a cycle every hour and you have a fully
+automated paper-trading loop driven by the institutional decision pipeline.

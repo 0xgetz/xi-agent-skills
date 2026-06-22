@@ -18,3 +18,7 @@ hmmlearn>=0.3,<0.4
 
 # Reporting (interactive HTML charts)
 plotly>=5.0
+
+# Live market data for paper_trader.py (no API key needed; crypto + stocks)
+yfinance>=0.2,<0.3
+requests>=2.31
