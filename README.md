@@ -1,25 +1,21 @@
 # Gumloop Agent — Skills & MCP
 
-This repository is an export of the **skills** and connected **MCP server** documentation from my Gumloop agent.
+This repository is an export of skills and connected MCP server documentation from my Gumloop agent.
 
 ## Contents
 
-- **`skills/`** — All agent skills. Each skill is a directory with a `SKILL.md` (instructions + YAML frontmatter) and optional `scripts/`, `references/`, and `assets/`.
-- **`MCP_SERVERS.md`** — The MCP integrations connected to the agent and the tools each exposes.
+- **`skills/`** — Core agent skills (skill-creator, gumloop-sdk, trigger-builder, etc.).
+- **`trading-skills/`** — 100 trading analysis skills, one per technique/indicator/strategy
+  (RSI, MACD, Bollinger Bands, Ichimoku, Elliott Wave, candlestick patterns, harmonics,
+  smart money concepts, options analytics, risk management, backtesting, and more).
+- **`mcp-skills/`** — 100 MCP integration skills, one per service/capability
+  (GitHub, Slack, Gmail, Postgres, vector DBs, cloud storage, market-data APIs, and more).
+- **`MCP_SERVERS.md`** — The MCP integrations actually connected to the live agent.
 
-## Skills included
+Each skill is a directory containing a `SKILL.md` with valid YAML frontmatter
+(`name`, `description`) plus a structured guide body.
 
-| Skill | Purpose |
-|-------|---------|
-| `skill-creator` | Create and improve agent skills. |
-| `gumloop-sdk` | Call integration (MCP) tools from sandbox Python or CLI. |
-| `gumcp-client` | Legacy gumcp client (deprecated; see MIGRATION.md). |
-| `trigger-builder` | Build custom polling triggers for integrations. |
-| `spreadsheet-output` | Formatting rules for clean CSV/XLSX output. |
-| `script-connected-html-output` | HTML outputs that fetch live integration data. |
-| `server-discovery` | Discover and add new MCP servers/integrations. |
-
-The `skills/.tools/` directory contains shared helper scripts (skill init, validation, HTML scaffold).
+> Trading skills are for educational analysis only and are not financial advice.
 
 ---
 _Exported automatically from the Gumloop agent._
